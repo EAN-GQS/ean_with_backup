@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <title>EAN Scanner — Fast Handheld + CSV DB (Targets + Last Scan on Top)</title>
+  <style>
+    :root { --brand:#2563eb; --ok:#16a34a; --bad:#dc2626; --bg:#0b1020; --card:#0f172a; --muted:#94a3b8; }
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;background:var(--bg);color:#e5e7eb}
+    .wrap{max-width:980px;margin:0 auto;padding:16px}
+    header{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:12px}
+    .hgroup h1{font-size:20px;font-weight:800;color:#fff}
+    .hgroup p{font-size:12px;color:#fff;opacity:.75}
+    .pill{display:inline-flex;align-items:center;gap:8px;background:#0b1226;border:1px solid #1f2a44;color:#cbd5e1;padding:8px 10px;border-radius:999px;font-size:12px}
+    .dot{width:8px;height:8px;border-radius:50%;background:#64748b}
+    .dot.ok{background:var(--ok)} .dot.bad{background:var(--bad)}
+    .card{background:var(--card);border:1px solid #1f2840;border-radius:14px;padding:14px;box-shadow:0 10px 30px rgba(0,0,0,.35);margin-bottom:12px}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    input.scan{flex:1;padding:14px;border:2px solid #233055;background:#0b1226;color:#e5e7eb;border-radius:12px;font-size:20px;letter-spacing:2px;outline:none}
+    input.scan:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(37,99,235,.25)}
+    button{appearance:none;border:0;background:var(--brand);color:#fff;padding:12px 14px;border-radius:12px;font-weight:800;font-size:16px;cursor:pointer}
+    button.danger{background:var(--bad)}
+    .file{position:relative;overflow:hidden}
+    .file input{position:absolute;inset:0;opacity:0;cursor:pointer}
+    .muted{color:var(--muted);font-size:12px}
+    .warn{display:none;margin-bottom:12px;background:#3a0a0a;border:1px solid #7f1d1d;color:#fecaca;padding:10px 12px;border-radius:12px}
+    .oknote{display:none;margin-bottom:12px;background:#05280f;border:1px solid #14532d;color:#c7f9cc;padding:10px 12px;border-radius:12px}
+    .result{position:fixed;left:50%;top:10px;transform:translateX(-50%);z-index:50;display:none;opacity:0;transition:opacity .18s;text-align:center;border-radius:14px;padding:18px 22px;border:2px solid var(--ok);background:#05280ff0}
+    .result.show{display:block;opacity:1}
+    .result.error{border-color:var(--bad);background:#3a0a0af0}
+    .result .label{font-size:16px;color:#cbd5e1}
+    .result .value{font-size:48px;font-weight:900;letter-spacing:1px;color:#a5b4fc}
+    .result.error .value{color:#fecaca;font-size:40px}
+    .kbd{background:#0b1226;padding:2px 6px;border-radius:6px;border:1px solid #223058;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+
+    /* Live table */
+    .table-wrap{max-height:360px;overflow:auto;border:1px solid #1f2840;border-radius:10px;background:#0b1226}
+    table{width:100%;border-collapse:collapse;font-size:13px}
+    thead th{position:sticky;top:0;background:#0f172a;z-index:1;text-align:left;padding:10px;border-bottom:1px solid #1f2840;color:#cbd5e1}
+    tbody td{padding:8px 10px;border-bottom:1px solid #1f2840;color:#e5e7eb}
+    tbody tr:nth-child(odd) td{background:#0b1226}
+    tbody tr:nth-child(even) td{background:#0e1428}
+    .count-badge{display:inline-block;min-width:28px;text-align:center;font-weight:700;background:#13234a;border:1px solid #233e7a;color:#c7d2fe;padding:4px 8px;border-radius:999px}
+
+    /* Count + individual in one cell */
+    .count-edit-cell{
+      display:flex;
+      align-items:center;
+      gap:6px;
+    }
+
+    /* Targets input */
+    .target-input{width:100%;max-width:110px;background:#0b1226;color:#e5e7eb;border:1px solid #1f2a44;border-radius:8px;padding:6px 8px}
+    .settings{display:flex;gap:8px;align-items:center}
+    .settings label{display:flex;gap:6px;align-items:center;font-size:12px;color:#cbd5e1;background:#0b1226;border:1px solid #1f2a44;padding:6px 8px;border-radius:8px}
+    select{background:#0b1226;color:#e5e7eb;border:1px solid #1f2a44;border-radius:8px;padding:6px 8px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div id="dbWarn" class="warn">⚠️ No data loaded. Click “Load CSV”. CSV must have headers; Column A = EAN, Column B = Location.</div>
+    <div id="dbOk" class="oknote">✅ Database loaded: <b><span id="dbCountTop">0</span></b> rows.</div>
+
+    <header>
+      <div class="hgroup">
+        <h1>🚀 EAN Scanner — Fast Handheld + CSV DB</h1>
+        <p>Load your CSV (first row headers). Column A = EAN, Column B = Location. Optimized for speed.</p>
+      </div>
+      <div id="status" class="pill"><span id="dot" class="dot"></span><span id="statText">Waiting for CSV…</span></div>
+    </header>
+
+    <div class="card">
+      <div class="row">
+        <label class="file">
+          <button id="loadBtn">📂 Load CSV</button>
+          <input id="fileInput" type="file" accept=".csv,text/csv" />
+        </label>
+        <button id="resetCountsBtn" title="Reset only counts">🔄 Reset Counts</button>
+        <button id="clearDbBtn" class="danger" title="Clear data and counts">🗑️ Clear Database</button>
+        <button id="exportBtn" title="Export to Excel">⬇️ Export</button>
+        <button id="backupBtn" title="Save local backup">💾 Backup</button>
+      </div>
+      <div class="row" style="margin-top:10px;gap:12px;align-items:center;justify-content:space-between;">
+        <div class="muted">• Digits only • End-of-scan on <span class="kbd">Enter</span> or short pause • UPC-A → EAN-13 • Checksum validation • Rows loaded: <span id="dbCount">0</span></div>
+        <div class="settings">
+          <label> Live table:
+            <select id="tableMode">
+              <option value="off">Off (fastest)</option>
+              <option value="scanned" selected>Scanned only</option>
+              <option value="all">All rows (slower)</option>
+            </select>
+          </label>
+          <label><input id="soundToggle" type="checkbox" /> Sound</label>
+          <label><input id="focusToggle" type="checkbox" checked /> Keep focus</label>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <input id="sink" class="scan" type="text" inputmode="none" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="Load CSV, then focus here & scan…" disabled />
+      </div>
+    </div>
+
+    <div id="countsCard" class="card" style="display:none;">
+      <div class="row" style="justify-content:space-between;align-items:center;">
+        <div class="hgroup">
+          <h1 style="font-size:16px;">📊 Live EAN Counts</h1>
+          <p class="muted" id="tableHint">Mode: Scanned only</p>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table aria-label="Live EAN counts">
+          <thead>
+            <tr>
+              <th style="width:220px;">EAN</th>
+              <th>Location</th>
+              <th style="width:120px;">Total (CSV C)</th>
+              <th style="width:200px;">Count + Individual (editable)</th>
+            </tr>
+          </thead>
+          <tbody id="countsBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="out" class="result">
+      <div class="label">Location</div>
+      <div id="outValue" class="value"></div>
+      <div id="outEan" class="muted"></div>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.17.1/xlsx.full.min.js"></script>
+  <script>
+    // ===== UI refs =====
+    const fileInput  = document.getElementById('fileInput');
+    const loadBtn    = document.getElementById('loadBtn');
+    const sink       = document.getElementById('sink');
+    const resetBtn   = document.getElementById('resetCountsBtn');
+    const clearBtn   = document.getElementById('clearDbBtn');
+    const exportBtn  = document.getElementById('exportBtn');
+    const backupBtn  = document.getElementById('backupBtn');
+
+    const countsCard = document.getElementById('countsCard');
+    const countsBody = document.getElementById('countsBody');
+    const tableModeSel = document.getElementById('tableMode');
+    const soundToggle  = document.getElementById('soundToggle');
+    const focusToggle  = document.getElementById('focusToggle');
+    const tableHint    = document.getElementById('tableHint');
+
+    const out       = document.getElementById('out');
+    const outValue  = document.getElementById('outValue');
+    const outEan    = document.getElementById('outEan');
+    const statText  = document.getElementById('statText');
+    const dot       = document.getElementById('dot');
+    const dbMeta    = document.getElementById('dbMeta');
+    const dbCount   = document.getElementById('dbCount');
+    const dbCountTop= document.getElementById('dbCountTop');
+    const dbWarn    = document.getElementById('dbWarn');
+    const dbOk      = document.getElementById('dbOk');
+
+    const setStatus = (t, ok=null) => { statText.textContent=t; dot.className='dot' + (ok===true?' ok': ok===false?' bad':''); };
+    const digitsOnly = s => String(s||'').replace(/\D+/g, '');
+
+    // ===== Data =====
+    let headers = [];
+    let eanDB   = Object.create(null);   // key: normalized EAN -> original row object
+    let countDB = Object.create(null);   // key: normalized EAN -> count
+    let targetDB= Object.create(null);   // key: normalized EAN -> individual (editable)
+    const EAN_COL_INDEX = 0;             // Column A = EAN
+    const LOC_COL_INDEX = 1;             // Column B = Location
+    const TOT_COL_INDEX = 2;             // Column C = Total from CSV
+
+    // DOM caches
+    const countCells = new Map(); // key -> <span> badge
+    const rowMap     = new Map(); // key -> <tr> element
+
+    // ===== Backup (localStorage) =====
+    const BACKUP_KEY = 'eanScannerBackup_v1';
+
+    function saveBackup(){
+      try{
+        const backupData = {
+          countDB,
+          targetDB
+        };
+        localStorage.setItem(BACKUP_KEY, JSON.stringify(backupData));
+        console.log('Backup saved');
+      }catch(e){
+        console.warn('Backup save failed', e);
+      }
+    }
+
+    function restoreBackup(){
+      try{
+        const raw = localStorage.getItem(BACKUP_KEY);
+        if(!raw) return;
+        const data = JSON.parse(raw) || {};
+        if(data.countDB){
+          for(const [k,v] of Object.entries(data.countDB)){
+            if(typeof v === 'number') countDB[k] = v;
+          }
+        }
+        if(data.targetDB){
+          for(const [k,v] of Object.entries(data.targetDB)){
+            targetDB[k] = v;
+          }
+        }
+        console.log('Backup restored');
+      }catch(e){
+        console.warn('Backup restore failed', e);
+      }
+    }
+
+    // ===== CSV parsing =====
+    function detectDelimiter(line){
+      const c  = (line.match(/,/g)||[]).length;
+      const sc = (line.match(/;/g)||[]).length;
+      return sc>c ? ';' : ',';
+    }
+    function parseCSV(text){
+      if(text.charCodeAt(0)===0xFEFF) text = text.slice(1);
+      const firstNL = text.indexOf("\n");
+      const headLine = firstNL === -1 ? text : text.slice(0, firstNL);
+      const delim = detectDelimiter(headLine);
+      const rows=[]; let i=0, field='', row=[], inQuotes=false;
+      for(; i<text.length; i++){
+        const ch = text[i];
+        if(inQuotes){
+          if(ch==='"'){
+            if(text[i+1]==='"'){ field+='"'; i++; } else { inQuotes=false; }
+          } else field+=ch;
+        } else {
+          if(ch==='"') inQuotes=true;
+          else if(ch===delim){ row.push(field); field=''; }
+          else if(ch==='\n' || ch==='\r'){
+            if(ch==='\r' && text[i+1]==='\n') i++;
+            row.push(field); field='';
+            if(row.length>1 || (row.length===1 && row[0]!=='')) rows.push(row);
+            row=[];
+          } else field+=ch;
+        }
+      }
+      if(field.length>0 || inQuotes || row.length>0){ row.push(field); rows.push(row); }
+      return rows;
+    }
+
+    // ===== Barcode helpers =====
+    let lastBeepAt=0, audioCtx=null; // reuse AudioContext for performance
+    function checksumEAN13(code){ if(code.length!==13) return false; let sum=0; for(let i=0;i<12;i++){ const n=code.charCodeAt(i)-48; sum += (i%2===0)? n : 3*n; } const chk=(10-(sum%10))%10; return chk===(code.charCodeAt(12)-48); }
+    function checksumEAN8(code){ if(code.length!==8) return false; const w=[3,1,3,1,3,1,3]; let sum=0; for(let i=0;i<7;i++) sum+=(code.charCodeAt(i)-48)*w[i]; const chk=(10-(sum%10))%10; return chk===(code.charCodeAt(7)-48); }
+    const isUPCA = code => code.length===12;
+    function normalizeCode(raw){ let d=digitsOnly(raw); if(!d) return ''; if(isUPCA(d)) d='0'+d; return d; }
+
+    function beep(ok=true){
+      if(!soundToggle.checked) return; // sound optional
+      const now = Date.now(); if(now-lastBeepAt<250) return; lastBeepAt=now;
+      try{
+        if(!audioCtx) audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+        const o=audioCtx.createOscillator(); const g=audioCtx.createGain();
+        o.type='sine'; o.frequency.value = ok? 880 : 220;
+        o.connect(g); g.connect(audioCtx.destination);
+        g.gain.setValueAtTime(ok?0.25:0.2, audioCtx.currentTime);
+        g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime+0.12);
+        o.start(); o.stop(audioCtx.currentTime+0.12);
+      }catch(e){}
+    }
+
+    // ===== Build DB =====
+    function buildDBFromCSV(text){
+      const rows = parseCSV(text);
+      if(!rows.length) return 0;
+      headers = rows[0].map(h=>String(h||'').trim());
+      const data = rows.slice(1);
+      const map = Object.create(null);
+      for(const r of data){
+        if(!r.length) continue;
+        const eanRaw = r[EAN_COL_INDEX] ?? '';
+        const key = normalizeCode(eanRaw);
+        if(!key) continue;
+        const rowObj={}; for(let i=0;i<headers.length;i++) rowObj[headers[i]]=r[i]??'';
+        rowObj.__row = r;
+        map[key]=rowObj; if(countDB[key]==null) countDB[key]=0;
+      }
+      eanDB = map;
+      // Restore saved counts/individual values (for keys present in this CSV)
+      restoreBackup();
+      const n = Object.keys(eanDB).length;
+      dbCount.textContent=n; dbCountTop.textContent=n;
+      if(dbMeta) dbMeta.textContent = n? `Loaded ${n} unique EANs` : 'No file loaded';
+      dbWarn.style.display = n? 'none':'block';
+      dbOk.style.display   = n? 'block':'none';
+      sink.disabled = !n;
+      if(n){ sink.focus(); setStatus('Ready', true); }
+      refreshTableVisibility();
+      if(getTableMode()==='all') renderAllRowsChunked(); else if(getTableMode()==='scanned') { clearTable(); }
+      return n;
+    }
+
+    // ===== Live table modes =====
+    function getTableMode(){ return tableModeSel.value; }
+    function refreshTableVisibility(){
+      const mode=getTableMode();
+      tableHint.textContent = 'Mode: ' + (mode==='off'?'Off (no table)': mode==='scanned'?'Scanned only':'All rows');
+      countsCard.style.display = (mode==='off')? 'none':'block';
+    }
+    function clearTable(){ countsBody.innerHTML=''; countCells.clear(); rowMap.clear(); }
+
+    function onTargetChange(e){
+      const key = e.target.dataset.key;
+      const val = e.target.value;
+      targetDB[key] = val === '' ? undefined : Number(val);
+    }
+
+    function getTotalForKey(key){
+      const rowObj = eanDB[key]; if(!rowObj) return '';
+      const headerName = headers[TOT_COL_INDEX];
+      let v = headerName ? rowObj[headerName] : undefined;
+      if((v === undefined || v === null || v === '') && Array.isArray(rowObj.__row) && rowObj.__row.length > TOT_COL_INDEX){
+        v = rowObj.__row[TOT_COL_INDEX];
+      }
+      return v == null ? '' : v;
+    }
+
+    function makeRow(key){
+      const rowObj = eanDB[key]; if(!rowObj) return null;
+      const location = rowObj[headers[LOC_COL_INDEX]] || '';
+      const total    = getTotalForKey(key);
+      const tr = document.createElement('tr');
+
+      const tdE   = document.createElement('td'); tdE.textContent = key;
+      const tdL   = document.createElement('td'); tdL.textContent = location;
+      const tdTot = document.createElement('td'); tdTot.textContent = total;
+      const tdC   = document.createElement('td'); tdC.className = 'count-edit-cell';
+
+      const badge = document.createElement('span');
+      badge.className = 'count-badge';
+      badge.textContent = countDB[key] || 0;
+
+      const inp = document.createElement('input');
+      inp.type = 'text';
+      inp.className = 'target-input';
+      inp.dataset.key = key;
+      if (targetDB[key] != null) {
+        inp.value = String(targetDB[key]);
+      } else {
+        inp.value = String(countDB[key] || 0);
+      }
+      inp.addEventListener('input', onTargetChange);
+
+      tdC.appendChild(badge);
+      tdC.appendChild(document.createTextNode(' '));
+      tdC.appendChild(inp);
+
+      tr.appendChild(tdE);
+      tr.appendChild(tdL);
+      tr.appendChild(tdTot);
+      tr.appendChild(tdC);
+
+      countCells.set(key, badge);
+      rowMap.set(key, tr);
+      return tr;
+    }
+
+    // Chunked render (ALL mode)
+    function renderAllRowsChunked(){
+      clearTable(); const keys = Object.keys(eanDB).sort(); const chunk = 400; let idx = 0;
+      function renderChunk(){
+        const frag = document.createDocumentFragment();
+        for(let i=0;i<chunk && idx<keys.length;i++,idx++){
+          const k = keys[idx]; const tr = makeRow(k); if(tr) frag.appendChild(tr);
+        }
+        countsBody.appendChild(frag);
+        if(idx<keys.length) {(window.requestIdleCallback||window.setTimeout)(renderChunk, 16);} }
+      renderChunk();
+    }
+
+    // Ensure row in SCANNED mode
+    function ensureRowForKeyScannedMode(key){
+      if(rowMap.has(key)) return;
+      const tr = makeRow(key); if(tr) countsBody.appendChild(tr);
+    }
+
+    function updateCountCell(key){
+      const mode=getTableMode(); if(mode==='off') return;
+      if(mode==='scanned' && !rowMap.has(key)) ensureRowForKeyScannedMode(key);
+      const cell = countCells.get(key);
+      if(cell) cell.textContent = countDB[key] || 0;
+      // Move last scanned row to TOP
+      const tr = rowMap.get(key);
+      if(tr && tr.parentNode){ countsBody.insertBefore(tr, countsBody.firstChild); }
+    }
+
+    // ===== Scan handling =====
+    let buf=''; let keyTimer=null; let inputTimer=null; let scanning=false;
+    const KEY_IDLE_MS=320; const INPUT_IDLE_MS=100;
+
+    function finalizeScan(){
+      const raw = buf || sink.value; buf=''; scanning=false;
+      const code = normalizeCode(raw); if(!code) return clearNext(); let ok=false;
+      if(code.length===13) ok=checksumEAN13(code); else if(code.length===8) ok=checksumEAN8(code);
+      if(!ok){ showResult('Invalid barcode checksum', code||raw, true); beep(false); return clearNext(true); }
+      if(Object.prototype.hasOwnProperty.call(eanDB, code)){
+        countDB[code]=(countDB[code]||0)+1;
+        const rowObj= eanDB[code];
+        const location = rowObj[headers[LOC_COL_INDEX]]||'';
+        const scans=countDB[code];
+        showResult(location, `${code} (scanned ${scans} ${scans===1?'time':'times'})`, false);
+        updateCountCell(code); beep(true);
+      } else {
+        showResult('EAN not found', code, true); beep(false);
+      }
+      clearNext();
+    }
+
+    function clearNext(err=false){
+      sink.value='';
+      setTimeout(()=>sink.focus(),0);
+      setStatus(err?'Error':'Ready',!err);
+    }
+
+    sink.addEventListener('keydown', e=>{
+      const isDigit = e.key>='0' && e.key<='9';
+      const isEnter = e.key==='Enter';
+      const isBack=e.key==='Backspace';
+      if(!isDigit && !isEnter && !isBack){ e.preventDefault(); return; }
+      if(isEnter){ e.preventDefault(); finalizeScan(); return; }
+      if(isDigit){
+        if(!scanning){ scanning=true; setStatus('Scanning…'); }
+        buf += e.key;
+        if(keyTimer) clearTimeout(keyTimer);
+        keyTimer = setTimeout(finalizeScan, KEY_IDLE_MS);
+      } else if(isBack){
+        buf = buf.slice(0,-1);
+      }
+    });
+
+    sink.addEventListener('input', ()=>{
+      const clean = digitsOnly(sink.value);
+      if(sink.value!==clean) sink.value=clean;
+      if(clean.length>=8){
+        if(inputTimer) clearTimeout(inputTimer);
+        inputTimer=setTimeout(finalizeScan, INPUT_IDLE_MS);
+        if(!scanning){ scanning=true; setStatus('Scanning…'); }
+      }
+    });
+
+    let focusInterval=null;
+    function startFocusKeeper(){
+      if(focusInterval) return;
+      focusInterval = setInterval(()=>{
+        if(focusToggle.checked && document.activeElement!==sink && !sink.disabled) sink.focus();
+      }, 1500);
+    }
+    function stopFocusKeeper(){
+      if(focusInterval){
+        clearInterval(focusInterval);
+        focusInterval=null;
+      }
+    }
+    focusToggle.addEventListener('change', ()=>{
+      if(focusToggle.checked) startFocusKeeper(); else stopFocusKeeper();
+    });
+
+    function showResult(txt, ean, isError=false){
+      out.className='result show'+(isError?' error':'');
+      outValue.textContent=txt;
+      outEan.textContent='EAN: '+ean;
+      setTimeout(()=>out.classList.remove('show'), 1600);
+    }
+
+    // ===== Controls =====
+    function resetCounts(){
+      countDB = Object.fromEntries(Object.keys(eanDB).map(k=>[k,0]));
+      if(getTableMode()!=='off'){
+        if(getTableMode()==='all') renderAllRowsChunked();
+        else clearTable();
+      }
+      setStatus('Counts reset ✓', true);
+      saveBackup();
+    }
+    function clearDatabase(){
+      headers=[];
+      eanDB=Object.create(null);
+      countDB=Object.create(null);
+      targetDB=Object.create(null);
+      dbCount.textContent=0;
+      dbCountTop.textContent=0;
+      if(dbMeta) dbMeta.textContent='No file loaded';
+      dbWarn.style.display='block';
+      dbOk.style.display='none';
+      countsCard.style.display='none';
+      sink.value='';
+      sink.disabled=true;
+      clearTable();
+      setStatus('Waiting for CSV…');
+      out.classList.remove('show');
+      saveBackup();
+    }
+
+    resetBtn.addEventListener('click', resetCounts);
+    clearBtn.addEventListener('click', clearDatabase);
+
+    tableModeSel.addEventListener('change', ()=>{
+      refreshTableVisibility();
+      const mode=getTableMode();
+      if(Object.keys(eanDB).length===0) return;
+      if(mode==='off'){
+        clearTable();
+      } else if(mode==='scanned'){
+        clearTable();
+      } else if(mode==='all'){
+        renderAllRowsChunked();
+      }
+    });
+
+    loadBtn.addEventListener('click', ()=>fileInput.click());
+    fileInput.addEventListener('change', async (e)=>{
+      const f=e.target.files && e.target.files[0];
+      if(!f) return;
+      const text = await f.text();
+      const n = buildDBFromCSV(text);
+      if(!n) setStatus('CSV problem', false);
+    });
+
+    // ===== Export (add Target column) =====
+    function exportToExcel(){
+      if(!headers.length){ setStatus('No data to export', false); return; }
+      const wb=XLSX.utils.book_new();
+      const outRows = Object.entries(eanDB).map(([k,row])=>({
+        ...row,
+        Count:  countDB[k]||0,
+        Target: targetDB[k]||''
+      }));
+      const exportHeaders=[...headers, 'Count', 'Target'];
+      const ws=XLSX.utils.json_to_sheet(outRows,{header:exportHeaders});
+      XLSX.utils.book_append_sheet(wb,ws,'EAN Data');
+      XLSX.writeFile(wb,'EAN_with_Count_and_Target.xlsx');
+      setStatus('Exported ✓', true);
+    }
+    exportBtn.addEventListener('click', exportToExcel);
+    backupBtn.addEventListener('click', saveBackup);
+
+    // Auto-backup every 60 seconds
+    setInterval(saveBackup, 60000);
+
+    // Init
+    setStatus('Waiting for CSV…');
+    dbWarn.style.display='block';
+    startFocusKeeper();
+  </script>
+</body>
+</html>
